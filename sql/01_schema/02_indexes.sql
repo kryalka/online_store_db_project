@@ -74,9 +74,9 @@ CREATE INDEX IF NOT EXISTS idx_status_history_order_date
     ON order_status_history(order_id, changed_at DESC);
 
 
-CREATE INDEX IF NOT EXISTS idx_promo_codes_active_dates
-    ON promo_codes(valid_from, valid_until)
-    WHERE is_active = TRUE;
+-- CREATE INDEX IF NOT EXISTS idx_promo_codes_active_dates
+--     ON promo_codes(valid_from, valid_until)
+--     WHERE is_active = TRUE;
 
-CREATE INDEX IF NOT EXISTS idx_promo_codes_code
-    ON promo_codes(code);
+-- CREATE INDEX IF NOT EXISTS idx_promo_codes_code
+--     ON promo_codes(code);

@@ -9,14 +9,6 @@ DROP TABLE IF EXISTS manufacturers CASCADE;
 DROP TABLE IF EXISTS employees CASCADE;
 DROP TABLE IF EXISTS customers CASCADE;
 
-DROP SEQUENCE IF EXISTS orders_order_number_seq CASCADE;
-
-CREATE SEQUENCE orders_order_number_seq
-    START WITH 1000
-    INCREMENT BY 1
-    MINVALUE 1000
-    CACHE 10;
-
 CREATE TABLE customers (
     customer_id SERIAL PRIMARY KEY,
     full_name VARCHAR(255) NOT NULL,
@@ -30,10 +22,8 @@ CREATE TABLE customers (
         CHECK (account_status IN ('active', 'inactive', 'blocked')),
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    CHECK (updated_at >= created_at)
+    CHECK (updated_at IS NULL OR updated_at >= created_at)
 );
-
-COMMENT ON TABLE customers IS 'Customers';
 
 CREATE TABLE employees (
     employee_id SERIAL PRIMARY KEY,
@@ -53,8 +43,6 @@ CREATE TABLE employees (
     CHECK (termination_date IS NULL OR termination_date >= hire_date)
 );
 
-COMMENT ON TABLE employees IS 'Employees';
-
 CREATE TABLE categories (
     category_id SERIAL PRIMARY KEY,
     parent_category_id INTEGER REFERENCES categories(category_id) ON DELETE SET NULL,
@@ -65,11 +53,8 @@ CREATE TABLE categories (
     sort_order INTEGER DEFAULT 0,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    CHECK (category_id <> parent_category_id)
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
-
-COMMENT ON TABLE categories IS 'Product categories';
 
 CREATE TABLE manufacturers (
     manufacturer_id SERIAL PRIMARY KEY,
@@ -87,8 +72,6 @@ CREATE TABLE manufacturers (
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
-COMMENT ON TABLE manufacturers IS 'Manufacturers';
-
 CREATE TABLE products (
     product_id SERIAL PRIMARY KEY,
     sku VARCHAR(50) UNIQUE NOT NULL,
@@ -99,9 +82,9 @@ CREATE TABLE products (
     full_description TEXT,
     base_price DECIMAL(12,2) NOT NULL CHECK (base_price >= 0),
     current_price DECIMAL(12,2) NOT NULL CHECK (current_price >= 0),
-    cost_price DECIMAL(12,2) CHECK (cost_price >= 0),
+    cost_price DECIMAL(12,2) CHECK (cost_price IS NULL OR cost_price >= 0),
     stock_quantity INTEGER NOT NULL DEFAULT 0 CHECK (stock_quantity >= 0),
-    reserved_quantity INTEGER NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0),
+    reserved_quantity INTEGER NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0 AND reserved_quantity <= stock_quantity),
     min_stock_level INTEGER DEFAULT 5 CHECK (min_stock_level >= 0),
     specifications JSONB DEFAULT '{}',
     main_image_url VARCHAR(500),
@@ -115,10 +98,15 @@ CREATE TABLE products (
     review_count INTEGER DEFAULT 0 CHECK (review_count >= 0),
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    published_at TIMESTAMPTZ
+    published_at TIMESTAMPTZ,
+    CHECK (cost_price IS NULL OR current_price >= cost_price)
 );
 
-COMMENT ON TABLE products IS 'Products';
+CREATE SEQUENCE orders_order_number_seq
+    START WITH 1000
+    INCREMENT BY 1
+    MINVALUE 1000
+    CACHE 10;
 
 CREATE TABLE orders (
     order_id SERIAL PRIMARY KEY,
@@ -150,7 +138,7 @@ CREATE TABLE orders (
         )),
     payment_transaction_id VARCHAR(100),
     coupon_code VARCHAR(50),
-    discount_percentage DECIMAL(5,2) CHECK (discount_percentage BETWEEN 0 AND 100),
+    discount_percentage DECIMAL(5,2) CHECK (discount_percentage IS NULL OR discount_percentage BETWEEN 0 AND 100),
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     paid_at TIMESTAMPTZ,
@@ -159,10 +147,13 @@ CREATE TABLE orders (
     customer_notes TEXT,
     internal_notes TEXT,
     CHECK (discount_amount <= subtotal_amount),
-    CHECK (total_amount = subtotal_amount - discount_amount + tax_amount + shipping_amount)
+    CHECK (total_amount = subtotal_amount - discount_amount + tax_amount + shipping_amount),
+    CHECK (
+        (cancelled_at IS NULL OR cancelled_at >= created_at) AND
+        (completed_at IS NULL OR completed_at >= created_at) AND
+        (paid_at IS NULL OR paid_at >= created_at)
+    )
 );
-
-COMMENT ON TABLE orders IS 'Orders';
 
 CREATE TABLE order_items (
     order_item_id SERIAL PRIMARY KEY,
@@ -170,15 +161,12 @@ CREATE TABLE order_items (
     product_id INTEGER NOT NULL REFERENCES products(product_id),
     quantity INTEGER NOT NULL CHECK (quantity > 0),
     unit_price DECIMAL(12,2) NOT NULL CHECK (unit_price >= 0),
-    item_discount DECIMAL(12,2) DEFAULT 0 CHECK (item_discount >= 0),
+    item_discount DECIMAL(12,2) DEFAULT 0 CHECK (item_discount >= 0 AND item_discount <= quantity * unit_price),
     product_name_at_time VARCHAR(500),
     product_sku_at_time VARCHAR(50),
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (order_id, product_id),
-    CHECK (item_discount <= quantity * unit_price)
+    UNIQUE (order_id, product_id)
 );
-
-COMMENT ON TABLE order_items IS 'Order items';
 
 CREATE TABLE deliveries (
     delivery_id SERIAL PRIMARY KEY,
@@ -207,8 +195,6 @@ CREATE TABLE deliveries (
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
-COMMENT ON TABLE deliveries IS 'Deliveries';
-
 CREATE TABLE order_status_history (
     history_id SERIAL PRIMARY KEY,
     order_id INTEGER NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
@@ -216,7 +202,7 @@ CREATE TABLE order_status_history (
     new_status VARCHAR(30) NOT NULL,
     changed_by_type VARCHAR(20) NOT NULL
         CHECK (changed_by_type IN ('customer','employee','system','payment_gateway')),
-    changed_by_id INTEGER,
+    changed_by_id INTEGER REFERENCES employees(employee_id) ON DELETE SET NULL,
     changed_by_name VARCHAR(255),
     change_reason TEXT,
     notes TEXT,
@@ -224,8 +210,6 @@ CREATE TABLE order_status_history (
     user_agent TEXT,
     changed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
-
-COMMENT ON TABLE order_status_history IS 'Order status history';
 
 CREATE TABLE reviews (
     review_id SERIAL PRIMARY KEY,
@@ -249,49 +233,3 @@ CREATE TABLE reviews (
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (product_id, customer_id)
 );
-
-COMMENT ON TABLE reviews IS 'Reviews';
-
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_customers_updated_at BEFORE UPDATE ON customers FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-CREATE TRIGGER trg_employees_updated_at BEFORE UPDATE ON employees FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-CREATE TRIGGER trg_categories_updated_at BEFORE UPDATE ON categories FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-CREATE TRIGGER trg_manufacturers_updated_at BEFORE UPDATE ON manufacturers FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-CREATE TRIGGER trg_products_updated_at BEFORE UPDATE ON products FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-CREATE TRIGGER trg_orders_updated_at BEFORE UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-CREATE TRIGGER trg_deliveries_updated_at BEFORE UPDATE ON deliveries FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-CREATE TRIGGER trg_reviews_updated_at BEFORE UPDATE ON reviews FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE INDEX idx_customers_email ON customers(email);
-CREATE INDEX idx_customers_status ON customers(account_status);
-
-CREATE UNIQUE INDEX idx_employees_active_username
-    ON employees(username)
-    WHERE is_active = TRUE;
-
-CREATE INDEX idx_products_category ON products(category_id);
-CREATE INDEX idx_products_manufacturer ON products(manufacturer_id);
-CREATE INDEX idx_products_price ON products(current_price);
-CREATE INDEX idx_products_active ON products(is_active) WHERE is_active = TRUE;
-
-CREATE INDEX idx_orders_customer ON orders(customer_id);
-CREATE INDEX idx_orders_status ON orders(status);
-CREATE INDEX idx_orders_created_at ON orders(created_at DESC);
-
-CREATE INDEX idx_order_items_order ON order_items(order_id);
-CREATE INDEX idx_order_items_product ON order_items(product_id);
-
-CREATE INDEX idx_deliveries_status ON deliveries(status);
-
-CREATE INDEX idx_reviews_product ON reviews(product_id);
-CREATE INDEX idx_reviews_status ON reviews(status) WHERE status = 'approved';
-
-CREATE INDEX idx_status_history_order ON order_status_history(order_id);
-CREATE INDEX idx_status_history_date ON order_status_history(changed_at DESC);

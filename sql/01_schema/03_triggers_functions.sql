@@ -150,12 +150,12 @@ BEGIN
 
     UPDATE orders
     SET subtotal_amount = (
-            SELECT COALESCE(SUM(subtotal), 0)
+            SELECT COALESCE(SUM(quantity * unit_price), 0)
             FROM order_items
             WHERE order_id = target_order_id
         ),
         total_amount = (
-            SELECT COALESCE(SUM(total), 0)
+            SELECT COALESCE(SUM(quantity * unit_price), 0)
             FROM order_items
             WHERE order_id = target_order_id
         ) - discount_amount + tax_amount + shipping_amount,
